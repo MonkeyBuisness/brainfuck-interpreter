@@ -7,7 +7,7 @@ import (
 )
 
 func Test_Execute(t *testing.T) {
-	f, err := os.OpenFile("./examples/hello_world.bf", os.O_RDONLY, 0666)
+	f, err := os.OpenFile("./examples/simple.bf", os.O_RDONLY, 0666)
 	if err != nil {
 		panic(err)
 	}

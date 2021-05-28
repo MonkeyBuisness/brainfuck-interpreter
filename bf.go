@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 type bfRuntime struct {
@@ -37,8 +39,21 @@ func bfNewExpression(runtime *bfRuntime) *bfExpression {
 	}
 }
 
+func (r *bfRuntime) String() string {
+	cellsStr := make([]string, len(r.cells))
+	for i := range r.cells {
+		cellsStr[i] = fmt.Sprintf("%d", r.cells[i])
+	}
+
+	return fmt.Sprintf("index: %d, cells (#%d): {%s}",
+		r.index, len(r.cells), strings.Join(cellsStr, ", "))
+}
+
 func (e *bfExpression) applyCommand(cmd rune) error {
 	if e.innerExp != nil && e.innerExp.isDone {
+		e.cmdList = append(e.cmdList, '[')
+		e.cmdList = append(e.cmdList, e.innerExp.cmdList...)
+		e.cmdList = append(e.cmdList, ']')
 		e.innerExp = nil
 	}
 
@@ -144,6 +159,22 @@ func (e *bfExpression) read() error {
 	return nil
 }
 
+func (bf *bfExpression) printStackTrace() {
+	expressionsStr := make([]string, 0)
+	for exp, tab := bf, ""; exp != nil; exp = exp.innerExp {
+		cmdsStr := make([]string, len(exp.cmdList))
+		for i := range exp.cmdList {
+			cmdsStr[i] = string(exp.cmdList[i])
+		}
+		expStr := fmt.Sprintf("* %sdone: %t, commands: [%s]", tab, exp.isDone, strings.Join(cmdsStr, " "))
+		expressionsStr = append(expressionsStr, expStr)
+		tab += "\t"
+	}
+
+	fmt.Printf("[runtime]\n%s\n[epressions]\n%s\n\n",
+		bf.runtime, strings.Join(expressionsStr, "\n"))
+}
+
 func Execute(sourceInput io.Reader, input io.RuneReader, output io.Writer) error {
 	var p bytes.Buffer
 
@@ -161,11 +192,14 @@ func Execute(sourceInput io.Reader, input io.RuneReader, output io.Writer) error
 	for i := range p.Bytes() {
 		///
 		//fmt.Printf("%c", p.Bytes()[i])
+
 		///
 		err = bfExp.applyCommand(rune(p.Bytes()[i]))
 		if err != nil {
 			return err
 		}
+
+		//bfExp.printStackTrace()
 	}
 
 	return nil
