@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"os"
 	"testing"
 )
@@ -11,7 +12,7 @@ func Test_Execute(t *testing.T) {
 		panic(err)
 	}
 
-	err = Execute(f, os.Stdin, os.Stdout)
+	err = Execute(f, bufio.NewReader(os.Stdin), bufio.NewWriter(os.Stdout))
 	if err != nil {
 		panic(err)
 	}
