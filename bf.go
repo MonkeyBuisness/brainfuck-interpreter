@@ -1,111 +1,55 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
-	"fmt"
 	"io"
-	"os"
-	"strings"
 )
+
+const (
+	bfCommandsCount = 8
+)
+
+type bfCommandHandler func() error
 
 type bfRuntime struct {
 	cells        []rune
 	index        int
 	inputStream  io.RuneReader
 	outputStream io.Writer
-}
-
-type bfExpression struct {
-	cmdList  []rune
-	runtime  *bfRuntime
-	innerExp *bfExpression
-	isDone   bool
+	cmdList      []byte
+	cmdIndex     int
+	loopOffsets  []int
+	cmdHandlers  map[byte]bfCommandHandler
 }
 
 func bfNewRuntime(in io.RuneReader, out io.Writer) bfRuntime {
-	return bfRuntime{
+	r := bfRuntime{
 		cells:        make([]rune, 1),
 		index:        0,
+		cmdIndex:     0,
+		loopOffsets:  make([]int, 0),
 		inputStream:  in,
 		outputStream: out,
+		cmdHandlers:  make(map[byte]bfCommandHandler, bfCommandsCount),
 	}
+
+	r.cmdHandlers['>'] = r.next
+	r.cmdHandlers['<'] = r.prev
+	r.cmdHandlers['+'] = r.inc
+	r.cmdHandlers['-'] = r.dec
+	r.cmdHandlers['.'] = r.print
+	r.cmdHandlers[','] = r.read
+	r.cmdHandlers['['] = r.startLoop
+	r.cmdHandlers[']'] = r.endLoop
+
+	return r
 }
 
-func bfNewExpression(runtime *bfRuntime) *bfExpression {
-	return &bfExpression{
-		cmdList: make([]rune, 0),
-		runtime: runtime,
-	}
-}
+func (r *bfRuntime) execute(cmds []byte) error {
+	r.cmdList = cmds
 
-func (r *bfRuntime) String() string {
-	cellsStr := make([]string, len(r.cells))
-	for i := range r.cells {
-		cellsStr[i] = fmt.Sprintf("%d", r.cells[i])
-	}
-
-	return fmt.Sprintf("index: %d, cells (#%d): {%s}",
-		r.index, len(r.cells), strings.Join(cellsStr, ", "))
-}
-
-func (e *bfExpression) applyCommand(cmd rune) error {
-	if e.innerExp != nil && e.innerExp.isDone {
-		e.cmdList = append(e.cmdList, '[')
-		e.cmdList = append(e.cmdList, e.innerExp.cmdList...)
-		e.cmdList = append(e.cmdList, ']')
-		e.innerExp = nil
-	}
-
-	if e.innerExp != nil {
-		return e.innerExp.applyCommand(cmd)
-	}
-
-	var err error
-	switch cmd {
-	case '>':
-		err = e.next()
-	case '<':
-		err = e.prev()
-	case '+':
-		err = e.inc()
-	case '-':
-		err = e.dec()
-	case '.':
-		err = e.print()
-	case ',':
-		err = e.read()
-	case '[':
-		e.innerExp = bfNewExpression(e.runtime)
-		return nil
-	case ']':
-		for e.runtime.cells[e.runtime.index] > 0 {
-			err = e.run()
-			if err != nil {
-				return err
-			}
-		}
-		e.isDone = true
-		return nil
-	default:
-		// ignore unknown symbol
-		return nil
-	}
-
-	if err == nil {
-		e.cmdList = append(e.cmdList, cmd)
-	}
-
-	return err
-}
-
-func (e *bfExpression) run() error {
-	cmdList := make([]rune, len(e.cmdList))
-	copy(cmdList, e.cmdList)
-	e.cmdList = []rune{}
-
-	for i := range cmdList {
-		if err := e.applyCommand(cmdList[i]); err != nil {
+	for r.cmdIndex = 0; r.cmdIndex < len(cmds); r.cmdIndex++ {
+		if err := r.executeCurrentCmd(); err != nil {
 			return err
 		}
 	}
@@ -113,68 +57,87 @@ func (e *bfExpression) run() error {
 	return nil
 }
 
-func (e *bfExpression) next() error {
-	e.runtime.index++
-	if e.runtime.index >= len(e.runtime.cells) {
-		e.runtime.cells = append(e.runtime.cells, 0)
+func (r *bfRuntime) executeCurrentCmd() error {
+	cmd := r.cmdList[r.cmdIndex]
+
+	h, ok := r.cmdHandlers[cmd]
+	if !ok {
+		return nil
+	}
+
+	return h()
+}
+
+func (r *bfRuntime) next() error {
+	r.index++
+	if r.index == len(r.cells) {
+		r.cells = append(r.cells, 0)
 	}
 
 	return nil
 }
 
-func (e *bfExpression) prev() error {
-	e.runtime.index--
+func (r *bfRuntime) prev() error {
+	r.index--
 
 	return nil
 }
 
-func (e *bfExpression) inc() error {
-	e.runtime.cells[e.runtime.index]++
+func (r *bfRuntime) inc() error {
+	r.cells[r.index]++
 
 	return nil
 }
 
-func (e *bfExpression) dec() error {
-	e.runtime.cells[e.runtime.index]--
+func (r *bfRuntime) dec() error {
+	r.cells[r.index]--
 
 	return nil
 }
 
-func (e *bfExpression) print() error {
-	_, err := e.runtime.outputStream.Write(
-		[]byte{byte(e.runtime.cells[e.runtime.index])},
+func (r *bfRuntime) print() error {
+	_, err := r.outputStream.Write(
+		[]byte{byte(r.cells[r.index])},
 	)
 
 	return err
 }
 
-func (e *bfExpression) read() error {
-	r, _, err := e.runtime.inputStream.ReadRune()
+func (r *bfRuntime) read() error {
+	symbol, _, err := r.inputStream.ReadRune()
 	if err != nil {
 		return err
 	}
 
-	e.runtime.cells[e.runtime.index] = r
+	r.cells[r.index] = symbol
 
 	return nil
 }
 
-func (bf *bfExpression) printStackTrace() {
-	expressionsStr := make([]string, 0)
-	for exp, tab := bf, ""; exp != nil; exp = exp.innerExp {
-		cmdsStr := make([]string, len(exp.cmdList))
-		for i := range exp.cmdList {
-			cmdsStr[i] = string(exp.cmdList[i])
-		}
-		expStr := fmt.Sprintf("* %sdone: %t, commands: [%s]", tab, exp.isDone, strings.Join(cmdsStr, " "))
-		expressionsStr = append(expressionsStr, expStr)
-		tab += "\t"
-	}
+func (r *bfRuntime) startLoop() error {
+	r.loopOffsets = append(r.loopOffsets, r.cmdIndex)
 
-	fmt.Printf("[runtime]\n%s\n[epressions]\n%s\n\n",
-		bf.runtime, strings.Join(expressionsStr, "\n"))
+	return nil
 }
 
+func (r *bfRuntime) endLoop() error {
+	defer func() {
+		r.loopOffsets = r.loopOffsets[:len(r.loopOffsets)-1]
+	}()
+
+	if r.cells[r.index] <= 0 {
+		return nil
+	}
+
+	r.cmdIndex = r.loopOffsets[len(r.loopOffsets)-1]
+
+	return nil
+}
+
+// Execute executes brainfuck code.
+//
+// The sourceInput must provide bf source code reader.
+// The input and output have to provide input stream and output stream.
 func Execute(sourceInput io.Reader, input io.RuneReader, output io.Writer) error {
 	var p bytes.Buffer
 
@@ -186,35 +149,5 @@ func Execute(sourceInput io.Reader, input io.RuneReader, output io.Writer) error
 	// create runtime.
 	rt := bfNewRuntime(input, output)
 
-	// create default expression.
-	bfExp := bfNewExpression(&rt)
-
-	for i := range p.Bytes() {
-		///
-		//fmt.Printf("%c", p.Bytes()[i])
-
-		///
-		err = bfExp.applyCommand(rune(p.Bytes()[i]))
-		if err != nil {
-			return err
-		}
-
-		//bfExp.printStackTrace()
-	}
-
-	return nil
-}
-
-// TODO: remove
-
-func main() {
-	f, err := os.OpenFile("./examples/simple.bf", os.O_RDONLY, 0666)
-	if err != nil {
-		panic(err)
-	}
-
-	err = Execute(f, bufio.NewReader(os.Stdin), os.Stdout)
-	if err != nil {
-		panic(err)
-	}
+	return rt.execute(p.Bytes())
 }
