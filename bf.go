@@ -22,7 +22,7 @@ type bfRuntime struct {
 	cmdHandlers  map[byte]bfCommandHandler
 }
 
-func bfNewRuntime(in io.RuneReader, out io.Writer) bfRuntime {
+func bfNewRuntime(in io.RuneReader, out io.Writer, cmds []byte) bfRuntime {
 	r := bfRuntime{
 		cells:        make([]rune, 1),
 		index:        0,
@@ -30,6 +30,7 @@ func bfNewRuntime(in io.RuneReader, out io.Writer) bfRuntime {
 		loopOffsets:  make([]int, 0),
 		inputStream:  in,
 		outputStream: out,
+		cmdList:      cmds,
 		cmdHandlers:  make(map[byte]bfCommandHandler, bfCommandsCount),
 	}
 
@@ -45,10 +46,8 @@ func bfNewRuntime(in io.RuneReader, out io.Writer) bfRuntime {
 	return r
 }
 
-func (r *bfRuntime) execute(cmds []byte) error {
-	r.cmdList = cmds
-
-	for r.cmdIndex = 0; r.cmdIndex < len(cmds); r.cmdIndex++ {
+func (r *bfRuntime) execute() error {
+	for r.cmdIndex = 0; r.cmdIndex < len(r.cmdList); r.cmdIndex++ {
 		if err := r.executeCurrentCmd(); err != nil {
 			return err
 		}
@@ -115,12 +114,24 @@ func (r *bfRuntime) read() error {
 }
 
 func (r *bfRuntime) startLoop() error {
-	r.loopOffsets = append(r.loopOffsets, r.cmdIndex)
+	if r.cells[r.index] > 0 {
+		r.loopOffsets = append(r.loopOffsets, r.cmdIndex)
+		return nil
+	}
+
+	///
+	for ; r.cmdList[r.cmdIndex] != ']'; r.cmdIndex++ {
+	}
+	///
 
 	return nil
 }
 
 func (r *bfRuntime) endLoop() error {
+	if len(r.loopOffsets) == 0 {
+		return nil
+	}
+
 	defer func() {
 		r.loopOffsets = r.loopOffsets[:len(r.loopOffsets)-1]
 	}()
@@ -147,7 +158,7 @@ func Execute(sourceInput io.Reader, input io.RuneReader, output io.Writer) error
 	}
 
 	// create runtime.
-	rt := bfNewRuntime(input, output)
+	rt := bfNewRuntime(input, output, p.Bytes())
 
-	return rt.execute(p.Bytes())
+	return rt.execute()
 }
