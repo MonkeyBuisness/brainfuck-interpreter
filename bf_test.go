@@ -61,3 +61,24 @@ func Test_Execute(t *testing.T) {
 		})
 	}
 }
+
+func Test_test(t *testing.T) {
+	f, err := os.OpenFile("./examples/factorial.bf1", os.O_RDONLY, 0666)
+	if err != nil {
+		panic(err)
+	}
+
+	inst, err := Compile(f)
+	if err != nil {
+		panic(err)
+	}
+
+	r := BFRuntime{
+		cells:        make([]byte, 1),
+		index:        0,
+		instructions: inst,
+		instIndex:    0,
+	}
+
+	r.Execute(nil)
+}
