@@ -1,15 +1,15 @@
 package main
 
 import (
+	"context"
 	"os"
 
 	"github.com/MonkeyBuisness/brainfuck-interpreter/bf"
-	"github.com/MonkeyBuisness/brainfuck-interpreter/cli"
 )
 
 // TODO: remove
 func main() {
-	f, err := os.OpenFile("./examples/factorial.bf1", os.O_RDONLY, 0666)
+	f, err := os.OpenFile("./examples/factorial.bf", os.O_RDONLY, 0666)
 	if err != nil {
 		panic(err)
 	}
@@ -21,7 +21,7 @@ func main() {
 
 	r := bf.NewRuntime(inst, os.Stdin, os.Stdout)
 
-	cli.Debug(&r)
+	//cli.Debug(&r)
 
-	//r.Execute(context.Background(), nil)
+	r.Execute(context.Background(), nil)
 }

@@ -9,7 +9,7 @@ import (
 	tm "github.com/buger/goterm"
 )
 
-func Debug(r *bf.BFRuntime) {
+func Debug(r *bf.Runtime) {
 	waitChan := make(chan struct{}, 1)
 	go r.Execute(context.Background(), waitChan)
 
@@ -19,9 +19,9 @@ func Debug(r *bf.BFRuntime) {
 		tm.Clear()
 		tm.MoveCursor(1, 1)
 		instructions := r.Instructions()
+		_, instIndex := r.Instruction()
 
 		for i := range instructions {
-			_, instIndex := r.Instruction()
 			str := fmt.Sprintf("%c", instructions[i].Cmd())
 			if i == instIndex {
 				tm.Print(" |")
@@ -29,6 +29,7 @@ func Debug(r *bf.BFRuntime) {
 				tm.Print("| ")
 				continue
 			}
+			// tm.Printf("\n\n[###%d####]\n\n", instIndex)
 
 			tm.Print(str)
 		}
