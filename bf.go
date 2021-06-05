@@ -3,11 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"os"
-
-	tm "github.com/buger/goterm"
 )
 
 // BFRuntime represents Brainfuck runtime instance.
@@ -19,6 +16,9 @@ type BFRuntime struct {
 	index        int
 	instructions []BFInstruction
 	instIndex    int
+	inStream     io.Reader
+	outStream    io.Writer
+	it           BFInstructionIterator
 }
 
 // BFInstruction represents execution interface of a single Brainfuck instruction
@@ -31,20 +31,39 @@ type BFInstruction interface {
 	Cmd() rune
 }
 
+// Brainfuck instruction.
 type (
-	BFInstructionMoveNextCell struct{}
-	BFInstructionMovePrevCell struct{}
-	BFInstructionIncValue     struct{}
-	BFInstructionDecValue     struct{}
-	BFInstructionStartLoop    struct {
-		endLoopIndex int
+	// BFInstructionNextCell represents handler for the '>' Brainfuck command.
+	BFInstructionNextCell struct{}
+	// BFInstructionPrevCell represents handler for the '<' Brainfuck command.
+	BFInstructionPrevCell struct{}
+	// BFInstructionIncValue represents handler for the '+' Brainfuck command.
+	BFInstructionIncValue struct{}
+	// BFInstructionDecValue represents handler for the '-' Brainfuck command.
+	BFInstructionDecValue struct{}
+	// BFInstructionStartLoop represents handler for the '[' Brainfuck command.
+	BFInstructionStartLoop struct {
+		EndLoopIndex int
 	}
+	// BFInstructionEndLoop represents handler for the ']' Brainfuck command.
 	BFInstructionEndLoop struct {
-		startLoopIndex int
+		StartLoopIndex int
 	}
+	// BFInstructionPrint represents handler for the '.' Brainfuck command.
 	BFInstructionPrint struct{}
-	BFInstructionRead  struct{}
+	// BFInstructionRead represents handler for the ',' Brainfuck command.
+	BFInstructionRead struct{}
 )
+
+// BFInstructionIterator represents interface to iterate over the Brainfuck instructions.
+type BFInstructionIterator interface {
+	HasNext() bool
+	Next() (BFInstruction, int)
+}
+
+type defaultBFIterator struct {
+	runtime *BFRuntime
+}
 
 // Value returns value of a current cell.
 func (r *BFRuntime) Value() byte {
@@ -98,6 +117,35 @@ func (r *BFRuntime) Instruction() (BFInstruction, int) {
 	return r.instructions[r.instIndex], r.instIndex
 }
 
+// Print writes current cell's value to the output writer stream.
+func (r *BFRuntime) Print() error {
+	_, err := r.outStream.Write([]byte{r.Value()})
+	return err
+}
+
+// Read reads one byte (symbol) to the current cell's value from the input reader stream.
+func (r *BFRuntime) Read() error {
+	b := make([]byte, 1)
+	_, err := r.inStream.Read(b)
+	if err != nil {
+		return err
+	}
+
+	r.cells[r.index] = b[0]
+
+	return nil
+}
+
+// Iterator returns provided runtime iterator.
+func (r *BFRuntime) Iterator() BFInstructionIterator {
+	return r.it
+}
+
+// IterateBy sets custom runtime iterator.
+func (r *BFRuntime) IterateBy(it BFInstructionIterator) {
+	r.it = it
+}
+
 // Execute starts runtime process.
 //
 // waitChan (<-chan struct{}) param can be used to debug or pause execution process.
@@ -106,23 +154,170 @@ func (r *BFRuntime) Instruction() (BFInstruction, int) {
 // If it's closed (or nil), then runtime skip channel reading and continue execution.
 // Most of the time you can pass nil as a waitChan value.
 func (r *BFRuntime) Execute(ctx context.Context, waitChan <-chan struct{}) error {
-	for r.instIndex = 0; r.instIndex < len(r.instructions); r.instIndex++ {
-		if waitChan != nil {
-			<-waitChan
+	errChan := make(chan error, 1)
+	go func(errChan chan error) {
+		defer close(errChan)
+
+		for it := r.Iterator(); it.HasNext(); {
+			if waitChan != nil {
+				<-waitChan
+			}
+
+			instruction, index := it.Next()
+
+			if err := instruction.Execute(index, r); err != nil {
+				errChan <- err
+				return
+			}
 		}
-		if err := r.instructions[r.instIndex].Execute(r.instIndex, r); err != nil {
-			panic(err)
+	}(errChan)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return context.DeadlineExceeded
+		case err := <-errChan:
+			return err
 		}
+	}
+}
+
+// HasNext returns true if current instruction is not last in the execution list.
+func (it *defaultBFIterator) HasNext() bool {
+	return it.runtime.instIndex < len(it.runtime.instructions)
+}
+
+// Next returns next instruction from the execution list.
+func (it *defaultBFIterator) Next() (BFInstruction, int) {
+	defer it.runtime.Jump(it.runtime.instIndex + 1)
+
+	return it.runtime.Instruction()
+}
+
+// Execute executes command.
+func (i *BFInstructionNextCell) Execute(index int, runtime *BFRuntime) error {
+	runtime.Next()
+
+	return nil
+}
+
+// Cmd returns name (single character) of the command.
+func (i *BFInstructionNextCell) Cmd() rune {
+	return '>'
+}
+
+// Execute executes command.
+func (i *BFInstructionPrevCell) Execute(index int, runtime *BFRuntime) error {
+	runtime.Prev()
+
+	return nil
+}
+
+// Cmd returns name (single character) of the command.
+func (i *BFInstructionPrevCell) Cmd() rune {
+	return '<'
+}
+
+// Execute executes command.
+func (i *BFInstructionIncValue) Execute(index int, runtime *BFRuntime) error {
+	runtime.Inc()
+
+	return nil
+}
+
+// Cmd returns name (single character) of the command.
+func (i *BFInstructionIncValue) Cmd() rune {
+	return '+'
+}
+
+// Execute executes command.
+func (i *BFInstructionDecValue) Execute(index int, runtime *BFRuntime) error {
+	runtime.Dec()
+
+	return nil
+}
+
+// Cmd returns name (single character) of the command.
+func (i *BFInstructionDecValue) Cmd() rune {
+	return '-'
+}
+
+// Execute executes command.
+func (i *BFInstructionStartLoop) Execute(index int, runtime *BFRuntime) error {
+	if runtime.Value() == 0 {
+		runtime.Jump(i.EndLoopIndex)
 	}
 
 	return nil
+}
+
+// Cmd returns name (single character) of the command.
+func (i *BFInstructionStartLoop) Cmd() rune {
+	return '['
+}
+
+// Execute executes command.
+func (i *BFInstructionEndLoop) Execute(index int, runtime *BFRuntime) error {
+	if runtime.Value() > 0 {
+		runtime.Jump(i.StartLoopIndex)
+	}
+
+	return nil
+}
+
+// Cmd returns name (single character) of the command.
+func (i *BFInstructionEndLoop) Cmd() rune {
+	return ']'
+}
+
+// Execute executes command.
+func (i *BFInstructionPrint) Execute(index int, runtime *BFRuntime) error {
+	if err := runtime.Print(); err != nil {
+		return NewError(WriteSymbolError, err)
+	}
+
+	return nil
+}
+
+// Cmd returns name (single character) of the command.
+func (i *BFInstructionPrint) Cmd() rune {
+	return '.'
+}
+
+// Execute executes command.
+func (i *BFInstructionRead) Execute(index int, runtime *BFRuntime) error {
+	if err := runtime.Read(); err != nil {
+		return NewError(ReadSymbolError, err)
+	}
+
+	return nil
+}
+
+// Cmd returns name (single character) of the command.
+func (i *BFInstructionRead) Cmd() rune {
+	return ','
+}
+
+// NewRuntime creates new Brainfuck runtime instance.
+func NewRuntime(instructions []BFInstruction, in io.Reader, out io.Writer) BFRuntime {
+	runtime := BFRuntime{
+		cells:        make([]byte, 1),
+		index:        0,
+		instructions: instructions,
+		instIndex:    0,
+		inStream:     in,
+		outStream:    out,
+	}
+	runtime.it = &defaultBFIterator{&runtime}
+
+	return runtime
 }
 
 func Compile(sourceInput io.Reader) ([]BFInstruction, error) {
 	var p bytes.Buffer
 	_, err := p.ReadFrom(sourceInput)
 	if err != nil {
-		return nil, err
+		return nil, NewError(CompilationError, err)
 	}
 
 	instructions := make([]BFInstruction, 0, p.Len())
@@ -130,27 +325,31 @@ func Compile(sourceInput io.Reader) ([]BFInstruction, error) {
 
 	for i := range p.Bytes() {
 		var instruction BFInstruction
+
 		switch p.Bytes()[i] {
 		case '>':
-			instruction = &BFInstructionMoveNextCell{}
+			instruction = &BFInstructionNextCell{}
 		case '<':
-			instruction = &BFInstructionMovePrevCell{}
+			instruction = &BFInstructionPrevCell{}
 		case '+':
 			instruction = &BFInstructionIncValue{}
 		case '-':
 			instruction = &BFInstructionDecValue{}
 		case '.':
 			instruction = &BFInstructionPrint{}
+		case ',':
+			instruction = &BFInstructionRead{}
 		case '[':
 			instruction = &BFInstructionStartLoop{}
 			loopOffsets = append(loopOffsets, len(instructions))
 		case ']':
 			endLoopInstruction := &BFInstructionEndLoop{}
-			endLoopInstruction.startLoopIndex = loopOffsets[len(loopOffsets)-1]
+			endLoopInstruction.StartLoopIndex = loopOffsets[len(loopOffsets)-1]
 			loopOffsets = loopOffsets[:len(loopOffsets)-1]
 
-			if startLoopInstruction, ok := instructions[endLoopInstruction.startLoopIndex].(*BFInstructionStartLoop); ok {
-				startLoopInstruction.endLoopIndex = len(instructions)
+			if startLoopInstruction, ok :=
+				instructions[endLoopInstruction.StartLoopIndex].(*BFInstructionStartLoop); ok {
+				startLoopInstruction.EndLoopIndex = len(instructions)
 			}
 
 			instruction = endLoopInstruction
@@ -164,74 +363,7 @@ func Compile(sourceInput io.Reader) ([]BFInstruction, error) {
 	return instructions, nil
 }
 
-func (i *BFInstructionMoveNextCell) Execute(index int, runtime *BFRuntime) error {
-	runtime.NextCell()
-	return nil
-}
-
-func (i *BFInstructionMovePrevCell) Execute(index int, runtime *BFRuntime) error {
-	runtime.PrevCell()
-	return nil
-}
-
-func (i *BFInstructionIncValue) Execute(index int, runtime *BFRuntime) error {
-	runtime.Inc()
-	return nil
-}
-
-func (i *BFInstructionDecValue) Execute(index int, runtime *BFRuntime) error {
-	runtime.Dec()
-	return nil
-}
-
-func (i *BFInstructionStartLoop) Execute(index int, runtime *BFRuntime) error {
-	if runtime.Value() == 0 {
-		runtime.MoveInstructionIndex(i.endLoopIndex)
-	}
-
-	return nil
-}
-
-func (i *BFInstructionEndLoop) Execute(index int, runtime *BFRuntime) error {
-	if runtime.Value() > 0 {
-		runtime.MoveInstructionIndex(i.startLoopIndex)
-	}
-	return nil
-}
-
-func (i *BFInstructionPrint) Execute(index int, runtime *BFRuntime) error {
-	fmt.Printf("%c", runtime.Value())
-	return nil
-}
-
-func (i *BFInstructionMoveNextCell) String() string {
-	return ">"
-}
-
-func (i *BFInstructionMovePrevCell) String() string {
-	return "<"
-}
-
-func (i *BFInstructionIncValue) String() string {
-	return "+"
-}
-
-func (i *BFInstructionDecValue) String() string {
-	return "-"
-}
-
-func (i *BFInstructionStartLoop) String() string {
-	return "["
-}
-
-func (i *BFInstructionEndLoop) String() string {
-	return "]"
-}
-
-func (i *BFInstructionPrint) String() string {
-	return "."
-}
-
+/*
 func (r *BFRuntime) Debug() {
 	waitChan := make(chan struct{}, 1)
 	go r.Execute(waitChan)
@@ -271,10 +403,11 @@ func (r *BFRuntime) Debug() {
 		waitChan <- struct{}{}
 	}
 }
+*/
 
 // TODO: remove
 func main() {
-	f, err := os.OpenFile("./examples/test.bf", os.O_RDONLY, 0666)
+	f, err := os.OpenFile("./examples/factorial.bf1", os.O_RDONLY, 0666)
 	if err != nil {
 		panic(err)
 	}
@@ -284,14 +417,7 @@ func main() {
 		panic(err)
 	}
 
-	r := BFRuntime{
-		cells:        make([]byte, 1),
-		index:        0,
-		instructions: inst,
-		instIndex:    0,
-	}
+	r := NewRuntime(inst, os.Stdin, os.Stdout)
 
-	//r.Execute()
-	//r.Debug()
-	r.Execute(nil)
+	r.Execute(context.Background(), nil)
 }

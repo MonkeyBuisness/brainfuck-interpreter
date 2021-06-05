@@ -1,17 +1,6 @@
 package main
 
-import (
-	"bytes"
-	"fmt"
-	"os"
-	"path"
-	"path/filepath"
-	"regexp"
-	"testing"
-
-	"github.com/stretchr/testify/require"
-)
-
+/*
 var commentRegxp = regexp.MustCompile(`\[(.*?)\]`)
 
 type testRuneReader struct{}
@@ -82,3 +71,4 @@ func Test_test(t *testing.T) {
 
 	r.Execute(nil)
 }
+*/
