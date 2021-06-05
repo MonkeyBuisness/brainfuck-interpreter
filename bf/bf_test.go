@@ -1,4 +1,4 @@
-package main
+package bf
 
 /*
 var commentRegxp = regexp.MustCompile(`\[(.*?)\]`)

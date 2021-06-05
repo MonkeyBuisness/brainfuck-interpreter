@@ -1,10 +1,9 @@
-package main
+package bf
 
 import (
 	"bytes"
 	"context"
 	"io"
-	"os"
 )
 
 // BFRuntime represents Brainfuck runtime instance.
@@ -144,6 +143,11 @@ func (r *BFRuntime) Iterator() BFInstructionIterator {
 // IterateBy sets custom runtime iterator.
 func (r *BFRuntime) IterateBy(it BFInstructionIterator) {
 	r.it = it
+}
+
+// Instructions returns runtime instructions slice.
+func (r *BFRuntime) Instructions() []BFInstruction {
+	return r.instructions
 }
 
 // Execute starts runtime process.
@@ -313,6 +317,7 @@ func NewRuntime(instructions []BFInstruction, in io.Reader, out io.Writer) BFRun
 	return runtime
 }
 
+// Compile compiles Brainfuck code and returns slice of instructions to execute.
 func Compile(sourceInput io.Reader) ([]BFInstruction, error) {
 	var p bytes.Buffer
 	_, err := p.ReadFrom(sourceInput)
@@ -361,63 +366,4 @@ func Compile(sourceInput io.Reader) ([]BFInstruction, error) {
 	}
 
 	return instructions, nil
-}
-
-/*
-func (r *BFRuntime) Debug() {
-	waitChan := make(chan struct{}, 1)
-	go r.Execute(waitChan)
-
-	tm.Clear()
-	for {
-		///
-		tm.Clear()
-		tm.MoveCursor(1, 1)
-		for i := range r.instructions {
-			if i == r.instIndex {
-				tm.Print(" |")
-				tm.Print(tm.Color(r.instructions[i].String(), tm.RED))
-				tm.Print("| ")
-				continue
-			}
-
-			tm.Print(r.instructions[i])
-		}
-
-		tm.Print("\n\nCELLS:\n\n")
-		for i := range r.cells {
-			cellStr := fmt.Sprintf("[%d]: %d\n", i+1, r.cells[i])
-			if i == r.index {
-				tm.Println(tm.Background(tm.Color(cellStr, tm.BLACK), tm.BLUE))
-				continue
-			}
-			tm.Printf(cellStr)
-		}
-
-		tm.Flush()
-
-		///
-
-		b := make([]byte, 1)
-		os.Stdin.Read(b)
-		waitChan <- struct{}{}
-	}
-}
-*/
-
-// TODO: remove
-func main() {
-	f, err := os.OpenFile("./examples/factorial.bf1", os.O_RDONLY, 0666)
-	if err != nil {
-		panic(err)
-	}
-
-	inst, err := Compile(f)
-	if err != nil {
-		panic(err)
-	}
-
-	r := NewRuntime(inst, os.Stdin, os.Stdout)
-
-	r.Execute(context.Background(), nil)
 }
