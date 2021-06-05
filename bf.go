@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,10 @@ import (
 	tm "github.com/buger/goterm"
 )
 
+// BFRuntime represents Brainfuck runtime instance.
+//
+// This instance is responsible for executing list of the provided
+// Brainfuck commands and managing memory cells via execution process.
 type BFRuntime struct {
 	cells        []byte
 	index        int
@@ -16,20 +21,43 @@ type BFRuntime struct {
 	instIndex    int
 }
 
+// BFInstruction represents execution interface of a single Brainfuck instruction
+// on the runtime process.
+//
+// In other words it represents command handler for a single Brainfuck operator
+// such as +, -, <, >, etc.
 type BFInstruction interface {
 	Execute(i int, runtime *BFRuntime) error
-	String() string
+	Cmd() rune
 }
 
+type (
+	BFInstructionMoveNextCell struct{}
+	BFInstructionMovePrevCell struct{}
+	BFInstructionIncValue     struct{}
+	BFInstructionDecValue     struct{}
+	BFInstructionStartLoop    struct {
+		endLoopIndex int
+	}
+	BFInstructionEndLoop struct {
+		startLoopIndex int
+	}
+	BFInstructionPrint struct{}
+	BFInstructionRead  struct{}
+)
+
+// Value returns value of a current cell.
 func (r *BFRuntime) Value() byte {
 	return r.cells[r.index]
 }
 
-func (r *BFRuntime) Index() int {
+// Pointer returns current's cell index.
+func (r *BFRuntime) Pointer() int {
 	return r.index
 }
 
-func (r *BFRuntime) NextCell() {
+// Next moves pointer to the next cell.
+func (r *BFRuntime) Next() {
 	r.index++
 
 	if r.index == len(r.cells) {
@@ -37,23 +65,47 @@ func (r *BFRuntime) NextCell() {
 	}
 }
 
-func (r *BFRuntime) PrevCell() {
+// Prev moves pointer to the previous cell.
+func (r *BFRuntime) Prev() {
 	r.index--
 }
 
+// Inc increments current's cell value.
 func (r *BFRuntime) Inc() {
 	r.cells[r.index]++
 }
 
+// Dec decrements current's cell value.
 func (r *BFRuntime) Dec() {
 	r.cells[r.index]--
 }
 
-func (r *BFRuntime) MoveInstructionIndex(i int) {
+// Jump sets instruction index to execute.
+func (r *BFRuntime) Jump(i int) {
 	r.instIndex = i
 }
 
-func (r *BFRuntime) Execute(waitChan <-chan struct{}) {
+// Snapshot returns runtime's cell values as a byte slice.
+func (r *BFRuntime) Snapshot() []byte {
+	cp := make([]byte, len(r.cells))
+	copy(cp, r.cells)
+
+	return cp
+}
+
+// Instruction returns current instruction to execute and its index.
+func (r *BFRuntime) Instruction() (BFInstruction, int) {
+	return r.instructions[r.instIndex], r.instIndex
+}
+
+// Execute starts runtime process.
+//
+// waitChan (<-chan struct{}) param can be used to debug or pause execution process.
+// After each instruction executed this channel will be checked for nil (or closed).
+// If it's not nil, then runtime will wait for chanel's value and continue execution.
+// If it's closed (or nil), then runtime skip channel reading and continue execution.
+// Most of the time you can pass nil as a waitChan value.
+func (r *BFRuntime) Execute(ctx context.Context, waitChan <-chan struct{}) error {
 	for r.instIndex = 0; r.instIndex < len(r.instructions); r.instIndex++ {
 		if waitChan != nil {
 			<-waitChan
@@ -62,6 +114,8 @@ func (r *BFRuntime) Execute(waitChan <-chan struct{}) {
 			panic(err)
 		}
 	}
+
+	return nil
 }
 
 func Compile(sourceInput io.Reader) ([]BFInstruction, error) {
@@ -109,21 +163,6 @@ func Compile(sourceInput io.Reader) ([]BFInstruction, error) {
 
 	return instructions, nil
 }
-
-type (
-	BFInstructionMoveNextCell struct{}
-	BFInstructionMovePrevCell struct{}
-	BFInstructionIncValue     struct{}
-	BFInstructionDecValue     struct{}
-	BFInstructionStartLoop    struct {
-		endLoopIndex int
-	}
-	BFInstructionEndLoop struct {
-		startLoopIndex int
-	}
-	BFInstructionPrint struct{}
-	BFInstructionRead  struct{}
-)
 
 func (i *BFInstructionMoveNextCell) Execute(index int, runtime *BFRuntime) error {
 	runtime.NextCell()
@@ -231,166 +270,6 @@ func (r *BFRuntime) Debug() {
 		os.Stdin.Read(b)
 		waitChan <- struct{}{}
 	}
-}
-
-////////////////////////////////////////////////////////
-
-const (
-	bfCommandsCount = 8
-)
-
-type bfCommandHandler func() error
-
-type bfRuntime struct {
-	cells        []rune
-	index        int
-	inputStream  io.RuneReader
-	outputStream io.Writer
-	cmdList      []byte
-	cmdIndex     int
-	loopOffsets  []int
-	cmdHandlers  map[byte]bfCommandHandler
-}
-
-func bfNewRuntime(in io.RuneReader, out io.Writer, cmds []byte) bfRuntime {
-	r := bfRuntime{
-		cells:        make([]rune, 1),
-		index:        0,
-		cmdIndex:     0,
-		loopOffsets:  make([]int, 0),
-		inputStream:  in,
-		outputStream: out,
-		cmdList:      cmds,
-		cmdHandlers:  make(map[byte]bfCommandHandler, bfCommandsCount),
-	}
-
-	r.cmdHandlers['>'] = r.next
-	r.cmdHandlers['<'] = r.prev
-	r.cmdHandlers['+'] = r.inc
-	r.cmdHandlers['-'] = r.dec
-	r.cmdHandlers['.'] = r.print
-	r.cmdHandlers[','] = r.read
-	r.cmdHandlers['['] = r.startLoop
-	r.cmdHandlers[']'] = r.endLoop
-
-	return r
-}
-
-func (r *bfRuntime) execute() error {
-	for r.cmdIndex = 0; r.cmdIndex < len(r.cmdList); r.cmdIndex++ {
-		if err := r.executeCurrentCmd(); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (r *bfRuntime) executeCurrentCmd() error {
-	cmd := r.cmdList[r.cmdIndex]
-
-	h, ok := r.cmdHandlers[cmd]
-	if !ok {
-		return nil
-	}
-
-	return h()
-}
-
-func (r *bfRuntime) next() error {
-	r.index++
-	if r.index == len(r.cells) {
-		r.cells = append(r.cells, 0)
-	}
-
-	return nil
-}
-
-func (r *bfRuntime) prev() error {
-	r.index--
-
-	return nil
-}
-
-func (r *bfRuntime) inc() error {
-	r.cells[r.index]++
-
-	return nil
-}
-
-func (r *bfRuntime) dec() error {
-	r.cells[r.index]--
-
-	return nil
-}
-
-func (r *bfRuntime) print() error {
-	_, err := r.outputStream.Write(
-		[]byte{byte(r.cells[r.index])},
-	)
-
-	return err
-}
-
-func (r *bfRuntime) read() error {
-	symbol, _, err := r.inputStream.ReadRune()
-	if err != nil {
-		return err
-	}
-
-	r.cells[r.index] = symbol
-
-	return nil
-}
-
-func (r *bfRuntime) startLoop() error {
-	if r.cells[r.index] > 0 {
-		r.loopOffsets = append(r.loopOffsets, r.cmdIndex)
-		return nil
-	}
-
-	///
-	/*for ; r.cmdList[r.cmdIndex] != ']'; r.cmdIndex++ {
-	}*/
-	///
-
-	return nil
-}
-
-func (r *bfRuntime) endLoop() error {
-	if len(r.loopOffsets) == 0 {
-		return nil
-	}
-
-	defer func() {
-		r.loopOffsets = r.loopOffsets[:len(r.loopOffsets)-1]
-	}()
-
-	if r.cells[r.index] <= 0 {
-		return nil
-	}
-
-	r.cmdIndex = r.loopOffsets[len(r.loopOffsets)-1]
-
-	return nil
-}
-
-// Execute executes brainfuck code.
-//
-// The sourceInput must provide bf source code reader.
-// The input and output have to provide input stream and output stream.
-func Execute(sourceInput io.Reader, input io.RuneReader, output io.Writer) error {
-	var p bytes.Buffer
-
-	_, err := p.ReadFrom(sourceInput)
-	if err != nil {
-		return err
-	}
-
-	// create runtime.
-	rt := bfNewRuntime(input, output, p.Bytes())
-
-	return rt.execute()
 }
 
 // TODO: remove
