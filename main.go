@@ -50,7 +50,14 @@ func main() {
 				out = f
 			}
 
-			if err := bfCli.Execute(c.Context, in, out); err != nil {
+			var err error
+			switch {
+			case c.Args().Len() == 0:
+				err = bfCli.RunShell(c.Context)
+			default:
+				err = bfCli.Execute(c.Context, in, out)
+			}
+			if err != nil {
 				return fmt.Errorf("could not execute code: %v", err)
 			}
 
