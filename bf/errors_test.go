@@ -11,8 +11,8 @@ import (
 func Test_NewError(t *testing.T) {
 	customErr := errors.New("error")
 
-	err := NewError(ReadSymbolError, customErr)
+	err := NewError(ErrReadSymbol, customErr)
 	require.Error(t, err)
-	require.True(t, errors.Is(err, ReadSymbolError))
-	require.EqualError(t, err, fmt.Sprintf("%v: %v", ReadSymbolError, customErr))
+	require.True(t, errors.Is(err, ErrReadSymbol))
+	require.EqualError(t, err, fmt.Sprintf("%v: %v", ErrReadSymbol, customErr))
 }

@@ -275,7 +275,7 @@ func (i *InstructionEndLoop) Cmd() rune {
 // Execute executes command.
 func (i *InstructionPrint) Execute(index int, runtime *Runtime) error {
 	if err := runtime.Print(); err != nil {
-		return NewError(WriteSymbolError, err)
+		return NewError(ErrWriteSymbol, err)
 	}
 
 	return nil
@@ -289,7 +289,7 @@ func (i *InstructionPrint) Cmd() rune {
 // Execute executes command.
 func (i *InstructionRead) Execute(index int, runtime *Runtime) error {
 	if err := runtime.Read(); err != nil {
-		return NewError(ReadSymbolError, err)
+		return NewError(ErrReadSymbol, err)
 	}
 
 	return nil
@@ -320,7 +320,7 @@ func Compile(sourceInput io.Reader) ([]Instruction, error) {
 	var p bytes.Buffer
 	_, err := p.ReadFrom(sourceInput)
 	if err != nil {
-		return nil, NewError(CompilationError, err)
+		return nil, NewError(ErrCompilation, err)
 	}
 
 	instructions := make([]Instruction, 0, p.Len())

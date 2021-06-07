@@ -18,12 +18,26 @@ import (
 
 var commentRegxp = regexp.MustCompile(`\[(.*?)\]`)
 
-type testReader struct{}
+type testReader struct {
+	fn func(p []byte) (int, error)
+}
+type testWriter struct {
+	fn func(p []byte) (n int, err error)
+}
 
 // Read reads test bytes slice.
 func (r *testReader) Read(p []byte) (int, error) {
+	if r.fn != nil {
+		return r.fn(p)
+	}
+
 	p[0] = '1'
 	return 1, nil
+}
+
+// Write writes test bytes slice.
+func (w *testWriter) Write(p []byte) (n int, err error) {
+	return w.fn(p)
 }
 
 func TestRuntime_Value(t *testing.T) {
@@ -226,7 +240,7 @@ func TestRuntime_Execute(t *testing.T) {
 
 		err := r.Execute(context.Background(), nil)
 		require.Error(t, err)
-		require.True(t, errors.Is(err, ReadSymbolError))
+		require.True(t, errors.Is(err, ErrReadSymbol))
 	})
 
 	t.Run("all ok", func(t *testing.T) {
@@ -261,11 +275,10 @@ func TestRuntime_Execute(t *testing.T) {
 
 				waitChan := make(chan struct{}, len(instructions))
 				go func() {
-					for range instructions {
-						waitChan <- struct{}{}
-					}
+					waitChan <- struct{}{}
+					close(waitChan)
 				}()
-				err = r.Execute(context.Background(), nil)
+				err = r.Execute(context.Background(), waitChan)
 				require.NoError(t, err)
 				require.NotNil(t, outStream)
 				defer func() {
@@ -289,5 +302,255 @@ func TestRuntime_Execute(t *testing.T) {
 }
 
 func Test_defaultBFIterator_HasNext(t *testing.T) {
-	// TODO: add
+	r := Runtime{
+		instIndex: 2,
+		it:        defaultBFIterator{},
+	}
+
+	require.False(t, r.it.HasNext(&r))
+	r.instructions = []Instruction{
+		&InstructionDecValue{},
+		&InstructionIncValue{},
+		&InstructionEndLoop{},
+		&InstructionPrevCell{},
+	}
+	require.True(t, r.it.HasNext(&r))
+}
+
+func Test_defaultBFIterator_Next(t *testing.T) {
+	r := Runtime{
+		instIndex: 2,
+		instructions: []Instruction{
+			&InstructionDecValue{},
+			&InstructionIncValue{},
+			&InstructionEndLoop{},
+			&InstructionPrevCell{},
+		},
+		it: defaultBFIterator{},
+	}
+
+	instruction, instIndex := r.it.Next(&r)
+	require.Equal(t, 2, instIndex)
+	require.NotNil(t, instruction)
+	require.Equal(t, r.instructions[2], instruction)
+	require.Equal(t, 3, r.instIndex)
+}
+
+func TestInstruction_Cmd(t *testing.T) {
+	instructionCmdMap := map[rune]Instruction{
+		'>': &InstructionNextCell{},
+		'<': &InstructionPrevCell{},
+		'-': &InstructionDecValue{},
+		'+': &InstructionIncValue{},
+		']': &InstructionEndLoop{},
+		'[': &InstructionStartLoop{},
+		'.': &InstructionPrint{},
+		',': &InstructionRead{},
+	}
+
+	for cmd, instruction := range instructionCmdMap {
+		require.Equal(t, cmd, instruction.Cmd())
+	}
+}
+
+func TestInstructionNextCell_Execute(t *testing.T) {
+	r := Runtime{
+		index: 1,
+	}
+
+	inst := InstructionNextCell{}
+	err := inst.Execute(1, &r)
+	require.NoError(t, err)
+	require.Equal(t, 2, r.index)
+}
+
+func TestInstructionPrevCell_Execute(t *testing.T) {
+	r := Runtime{
+		index: 1,
+	}
+
+	inst := InstructionPrevCell{}
+	err := inst.Execute(1, &r)
+	require.NoError(t, err)
+	require.Equal(t, 0, r.index)
+}
+
+func TestInstructionIncValue_Execute(t *testing.T) {
+	r := Runtime{
+		index: 1,
+		cells: []byte{1, 2, 5},
+	}
+
+	inst := InstructionIncValue{}
+	err := inst.Execute(1, &r)
+	require.NoError(t, err)
+	require.Equal(t, byte(3), r.cells[r.index])
+}
+
+func TestInstructionDecValue_Execute(t *testing.T) {
+	r := Runtime{
+		index: 1,
+		cells: []byte{1, 2, 5},
+	}
+
+	inst := InstructionDecValue{}
+	err := inst.Execute(1, &r)
+	require.NoError(t, err)
+	require.Equal(t, byte(1), r.cells[r.index])
+}
+
+func TestInstructionStartLoop_Execute(t *testing.T) {
+	r := Runtime{
+		index: 1,
+		cells: []byte{1, 0, 5},
+	}
+
+	inst := InstructionStartLoop{
+		EndLoopIndex: 2,
+	}
+	err := inst.Execute(1, &r)
+	require.NoError(t, err)
+	require.Equal(t, 2, r.instIndex)
+}
+
+func TestInstructionEndLoop_Execute(t *testing.T) {
+	r := Runtime{
+		index: 1,
+		cells: []byte{1, 3, 5},
+	}
+
+	inst := InstructionEndLoop{
+		StartLoopIndex: 2,
+	}
+	err := inst.Execute(1, &r)
+	require.NoError(t, err)
+	require.Equal(t, 2, r.instIndex)
+}
+
+func TestInstructionPrint_Execute(t *testing.T) {
+	t.Run("print error", func(t *testing.T) {
+		writeErr := errors.New("write error")
+		writer := testWriter{
+			fn: func(p []byte) (n int, err error) {
+				return 0, writeErr
+			},
+		}
+		r := Runtime{
+			index:     1,
+			cells:     []byte{1, 6, 5},
+			outStream: &writer,
+		}
+
+		inst := InstructionPrint{}
+		err := inst.Execute(1, &r)
+		require.Error(t, err)
+		require.True(t, errors.Is(err, ErrWriteSymbol))
+	})
+
+	t.Run("all ok", func(t *testing.T) {
+		writer := bytes.NewBuffer([]byte{123})
+		r := Runtime{
+			index:     1,
+			cells:     []byte{1, 6, 5},
+			outStream: writer,
+		}
+
+		inst := InstructionPrint{}
+		err := inst.Execute(1, &r)
+		require.NoError(t, err)
+		require.Equal(t, 2, writer.Len())
+		require.Equal(t, byte(6), writer.Bytes()[1])
+	})
+}
+
+func TestInstructionRead_Execute(t *testing.T) {
+	t.Run("read error", func(t *testing.T) {
+		readErr := errors.New("read error")
+		reader := testReader{
+			fn: func(p []byte) (n int, err error) {
+				return 0, readErr
+			},
+		}
+		r := Runtime{
+			index:    1,
+			cells:    []byte{1, 6, 5},
+			inStream: &reader,
+		}
+
+		inst := InstructionRead{}
+		err := inst.Execute(1, &r)
+		require.Error(t, err)
+		require.True(t, errors.Is(err, ErrReadSymbol))
+	})
+
+	t.Run("all ok", func(t *testing.T) {
+		reader := bytes.NewBuffer([]byte{123})
+		r := Runtime{
+			index:    1,
+			cells:    []byte{1, 6, 5},
+			inStream: reader,
+		}
+
+		inst := InstructionRead{}
+		err := inst.Execute(1, &r)
+		require.NoError(t, err)
+		require.Equal(t, byte(123), r.cells[r.index])
+	})
+}
+
+func Test_NewRuntime(t *testing.T) {
+	instructions := []Instruction{
+		&InstructionDecValue{},
+		&InstructionNextCell{},
+		&InstructionPrevCell{},
+	}
+	in := testReader{}
+	out := testWriter{}
+
+	r := NewRuntime(instructions, &in, &out)
+	require.NotNil(t, r)
+	require.Len(t, r.cells, 1)
+	require.Equal(t, 0, r.index)
+	require.Equal(t, instructions, r.instructions)
+	require.Equal(t, 0, r.instIndex)
+	require.Equal(t, &in, r.inStream)
+	require.Equal(t, &out, r.outStream)
+	require.NotNil(t, r.it)
+}
+
+func Test_Compile(t *testing.T) {
+	t.Run("compilation error", func(t *testing.T) {
+		sourceReader := testReader{
+			fn: func(p []byte) (int, error) {
+				return 0, errors.New("read error")
+			},
+		}
+
+		_, err := Compile(&sourceReader)
+		require.Error(t, err)
+		require.True(t, errors.Is(err, ErrCompilation))
+	})
+
+	t.Run("all ok", func(t *testing.T) {
+		sourceReader := testReader{
+			fn: func(p []byte) (int, error) {
+				code := []byte{'+', '+', '+', '>', '+'}
+				copy(p, code)
+
+				return len(code), io.EOF
+			},
+		}
+
+		instructions, err := Compile(&sourceReader)
+		require.NoError(t, err)
+		require.NotEmpty(t, instructions)
+		expInstructions := []Instruction{
+			&InstructionIncValue{},
+			&InstructionIncValue{},
+			&InstructionIncValue{},
+			&InstructionNextCell{},
+			&InstructionIncValue{},
+		}
+		require.Equal(t, expInstructions, instructions)
+	})
 }
